@@ -1,0 +1,208 @@
+#ledger code
+import pandas as pd
+import numpy as np
+
+# Load data from CSV with absolute path
+csv_path = 'signals_4h_.csv'
+df = pd.read_csv(csv_path, parse_dates=['timestamp'], index_col='timestamp')
+
+# Sample data creation using loaded CSV data
+sample_data = {
+    'timestamp': df.index,  # Using 'timestamp' as the index
+    'rsi_signal': df['rsi_signal'],  # Use actual 'rsi_signal' from your CSV
+    'open': df['open'],  # Use actual 'Open' prices from your CSV
+    'close': df['close']  # Use actual 'Close' prices from your CSV
+}
+
+# Create DataFrame from sample data
+sample_df = pd.DataFrame(sample_data)
+
+# Function to generate signals and calculate PnL (updated version)
+def generate_signals(df):
+    # Initialize the necessary lists
+    action = []
+    buy_price = []
+    sell_price = []
+    pnl = []
+    date = []
+    signal = []
+
+    # Loop through the dataframe to generate the ledger
+    for i in range(1, len(df)):
+        if len(action) == 0:
+            action.append(df['rsi_signal'].iloc[i])
+            buy_price.append(df['open'].iloc[i])
+            date.append(df.index[i])
+            sell_price.append(np.nan)
+            pnl.append(np.nan)
+            signal.append(df['rsi_signal'].iloc[i])
+        else:
+            if action[-1] == df['rsi_signal'].iloc[i] or df['rsi_signal'].iloc[i] == 0:
+                continue
+            else:
+                action.append(df['rsi_signal'].iloc[i])
+                sell_price.append(df['close'].iloc[i])
+                date.append(df.index[i])
+                buy_price.append(np.nan)
+                signal.append(df['rsi_signal'].iloc[i])
+                pnl.append(np.nan)
+
+                action.append(df['rsi_signal'].iloc[i])
+                buy_price.append(df['close'].iloc[i])
+                date.append(df.index[i])
+                sell_price.append(np.nan)
+                signal.append(df['rsi_signal'].iloc[i])
+                pnl.append(np.nan)
+
+    # Create the ledger dataframe
+    ledger = pd.DataFrame({
+        'date': date, 
+        'signal': signal, 
+        'action': action, 
+        'buy_price': buy_price, 
+        'sell_price': sell_price, 
+        'pnl': pnl
+    })
+    ledger['action'] = ledger['action'].replace({1: 'Buy', -1: 'Sell', 0: 'Hold'})
+    ledger['buy_price'] = ledger['buy_price'].fillna(method='ffill')
+    ledger['signal'] = ledger['signal'].replace({1: 'Buy', -1: 'Sell', 0: 'Hold'})
+    ledger['action'] = ledger['action'].replace({'Buy': 'Long', 'Sell': 'Short'})
+
+    # Function to calculate PnL and balance
+    def calculate_pnl_and_balance(df):
+        balance = 10000  # Starting balance
+        balances = []  # List to store balance after each transaction
+
+        for index, row in df.iterrows():
+            buy_price = float(row['buy_price'])
+            sell_price = float(row['sell_price'])
+
+            if pd.isna(sell_price) or pd.isna(buy_price):
+                balances.append(balance)  # No change in balance
+                continue
+
+            if df.iloc[index-1]['signal'] == 'Buy':  # Long
+                pnl_percent = ((sell_price - buy_price) / buy_price) * 100
+            elif df.iloc[index-1]['signal'] == 'Sell':  # Short
+                pnl_percent = ((buy_price - sell_price) / buy_price) * 100
+            else:
+                pnl_percent = 0
+
+            pnl_change = balance * (pnl_percent / 100)  # Calculate change in balance
+            balance += pnl_change  # Update balance
+            balances.append(balance)  # Store updated balance
+
+            df.at[index, 'pnl'] = round(pnl_percent, 2)  # Efficient assignment
+
+        df['balance'] = balances  # Add balance column to DataFrame
+        return df
+
+    # Calculate PnL and balance
+    ledger_with_pnl = calculate_pnl_and_balance(ledger.copy())  # Use a copy to avoid modifying the original dataframe
+    ledger_with_pnl['date'] = pd.to_datetime(ledger_with_pnl['date'])
+    ledger_with_pnl['pnl'] = ledger_with_pnl['pnl'].fillna(0)
+    ledger_with_pnl['sell_price'].fillna(0, inplace=True)
+
+    return ledger_with_pnl
+
+# Generate signals and calculate PnL
+processed_ledger = generate_signals(sample_df)
+
+# Display the resulting ledger DataFrame
+print(processed_ledger)
+
+#Tp & SL hits code
+
+
+import pandas as pd
+
+def check_sl_tp(interval_data, action_type, buy_price):
+    tp = buy_price * 1.05  # Take Profit level 5%
+    sl = buy_price * 0.97  # Stop Loss level 3%
+    tp_hit_time = None
+    sl_hit_time = None
+
+    for idx, row in interval_data.iterrows():
+        current_time = row.name  # Using the index as timestamp
+        if action_type == 'Long':
+            if row['high'] >= tp and tp_hit_time is None:
+                tp_hit_time = current_time
+            if row['low'] <= sl and sl_hit_time is None:
+                sl_hit_time = current_time
+        elif action_type == 'Short':
+            if row['low'] <= tp and tp_hit_time is None:
+                tp_hit_time = current_time
+            if row['high'] >= sl and sl_hit_time is None:
+                sl_hit_time = current_time
+
+    if tp_hit_time and sl_hit_time:
+        if tp_hit_time < sl_hit_time:
+            return 'TP hit', tp, tp_hit_time
+        else:
+            return 'SL hit', sl, sl_hit_time
+    elif tp_hit_time:
+        return 'TP hit', tp, tp_hit_time
+    elif sl_hit_time:
+        return 'SL hit', sl, sl_hit_time
+    else:
+        return None, None, None
+
+
+# Example usage:
+# Assuming 'processed_ledger' is your ledger DataFrame and 'df' is your OHLC data DataFrame
+
+for i in range(len(processed_ledger) - 1):
+    start_time = processed_ledger.loc[i, 'date']
+    end_time = processed_ledger.loc[i + 1, 'date']
+    
+    buy_price = processed_ledger.loc[i, 'buy_price']
+    action_type = processed_ledger.loc[i, 'action']
+    
+    current_time = start_time
+    tp_sl_hit = False
+    
+    while current_time < end_time:
+        interval_end = current_time + pd.Timedelta(hours=4)
+        interval_data = df[(df.index >= current_time) & (df.index < interval_end)]
+        
+        action, sell_price, hit_time = check_sl_tp(interval_data, action_type, buy_price)
+        if action:
+            processed_ledger.at[i + 1, 'action'] = action
+            processed_ledger.at[i + 1, 'sell_price'] = sell_price
+            processed_ledger.at[i + 1, 'date'] = hit_time  # Update the timestamp to when SL/TP is hit
+            processed_ledger.at[i + 1, 'hit_time'] = hit_time  # Add hit time
+            tp_sl_hit = True
+            break
+        
+        current_time = interval_end  
+
+    if not tp_sl_hit:
+        
+        continue
+# Calculate PnL and update balance in the ledger
+initial_balance = 10000
+balance = initial_balance
+
+for i in range(1, len(processed_ledger)):
+    if processed_ledger.at[i, 'action'] in ['TP hit', 'SL hit']:
+        sell_price = processed_ledger.at[i, 'sell_price']
+        buy_price = processed_ledger.at[i - 1, 'buy_price']
+        if processed_ledger.at[i - 1, 'action'] == 'Long':
+            pnl = sell_price - buy_price
+        elif processed_ledger.at[i - 1, 'action'] == 'Short':
+            pnl = buy_price - sell_price
+        else:
+            pnl = 0
+        pnl = max(pnl, 0)  # Ensure PnL does not go negative
+        balance += pnl
+        processed_ledger.at[i, 'pnl'] = pnl
+        processed_ledger.at[i, 'balance'] = max(balance, 0)  # Ensure balance does not go negative
+
+# Fill forward the buy_price for the next trade entry
+processed_ledger['buy_price'] = processed_ledger['buy_price'].fillna(method='ffill')
+
+# Output the updated ledger
+print(processed_ledger)
+
+# Optionally, save the updated ledger to a CSV file
+processed_ledger.to_csv('updated_ledger.csv', index=False)
